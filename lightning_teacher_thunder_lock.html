@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lightning Teacher - Thunder Lock</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&display=swap');
+        
+        body {
+            font-family: 'Fredoka', sans-serif;
+            margin: 0;
+            overflow: hidden;
+            background-color: #0f172a; /* Dark background before camera loads */
+            color: white;
+            user-select: none;
+        }
+
+        #output_canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+            /* Flip the canvas horizontally to act as a mirror */
+            transform: scaleX(-1);
+        }
+
+        #ui-layer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 10;
+            pointer-events: none; /* Let canvas handle raw coordinates, though we use MediaPipe */
+        }
+
+        /* Allow clicks on buttons before hand tracking is active */
+        .interactive {
+            pointer-events: auto;
+        }
+
+        .neon-text {
+            text-shadow: 0 0 10px #00ffff, 0 0 20px #00ffff, 0 0 40px #00ffff;
+        }
+
+        .thunder-box {
+            background: rgba(15, 23, 42, 0.8);
+            border: 4px solid #3b82f6;
+            box-shadow: 0 0 15px #3b82f6 inset, 0 0 15px #3b82f6;
+            border-radius: 20px;
+            transition: all 0.2s ease;
+        }
+
+        .thunder-box.locked {
+            border-color: #fbbf24;
+            box-shadow: 0 0 30px #fbbf24 inset, 0 0 30px #fbbf24;
+            transform: scale(1.05);
+            background: rgba(30, 41, 59, 0.9);
+        }
+
+        .thunder-box.correct {
+            border-color: #4ade80;
+            box-shadow: 0 0 40px #4ade80 inset, 0 0 40px #4ade80;
+            background: rgba(20, 83, 45, 0.9);
+        }
+
+        .thunder-box.wrong {
+            border-color: #f87171;
+            box-shadow: 0 0 40px #f87171 inset, 0 0 40px #f87171;
+            background: rgba(127, 29, 29, 0.9);
+        }
+
+        /* Fraction styling */
+        .fraction {
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            vertical-align: middle;
+            margin: 0 10px;
+        }
+        .fraction-line {
+            width: 100%;
+            height: 4px;
+            background-color: white;
+            margin: 4px 0;
+            border-radius: 2px;
+            box-shadow: 0 0 5px white;
+        }
+
+        /* Loading Spinner */
+        .loader {
+            border: 8px solid rgba(255,255,255,0.2);
+            border-left-color: #00ffff;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Hearts */
+        .heart {
+            color: #ef4444;
+            text-shadow: 0 0 10px #ef4444;
+            font-size: 2rem;
+            transition: all 0.3s;
+        }
+        .heart.lost {
+            color: #475569;
+            text-shadow: none;
+            transform: scale(0.8);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Hidden video element for MediaPipe input -->
+    <video id="input_video" style="display:none;" autoplay playsinline></video>
+    
+    <!-- Canvas for drawing the camera feed, lightning effects, and cursor -->
+    <canvas id="output_canvas"></canvas>
+
+    <!-- UI Overlay Layer -->
+    <div id="ui-layer" class="flex flex-col justify-between p-6">
+        
+        <!-- Start Screen -->
+        <div id="start-screen" class="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 bg-opacity-90 backdrop-blur-sm z-50">
+            <h1 class="text-6xl md:text-8xl font-bold text-white neon-text mb-4 text-center">Lightning Teacher</h1>
+            <h2 class="text-3xl md:text-4xl text-yellow-400 font-bold mb-8 text-center drop-shadow-[0_0_10px_rgba(250,204,21,0.8)]">⚡ Thunder Lock ⚡</h2>
+            <p class="text-xl text-gray-200 mb-8 max-w-2xl text-center">
+                Topik: <span class="text-blue-400 font-bold">Tambah Pecahan</span> | Subjek: <span class="text-blue-400 font-bold">Matematik Tahun 3</span><br><br>
+                <span class="text-yellow-300">CARA BERMAIN:</span><br>
+                1. Halakan <b>tapak tangan (buka)</b> ke arah skrin untuk menggerakkan sasaran dan mengunci jawapan.<br>
+                2. Lakukan gaya <b>tumbuk (genggam tangan)</b> untuk melancarkan petir ke atas jawapan!
+            </p>
+            <div id="loading-indicator" class="flex flex-col items-center hidden">
+                <div class="loader mb-4"></div>
+                <p class="text-cyan-400 animate-pulse font-bold text-xl">Memuatkan Kamera & AI...</p>
+            </div>
+            <button id="start-btn" class="interactive bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-12 rounded-full text-2xl border-4 border-cyan-400 shadow-[0_0_20px_#22d3ee] transition-transform transform hover:scale-110">
+                MULA MAIN
+            </button>
+        </div>
+
+        <!-- Game HUD (Heads Up Display) -->
+        <div id="hud" class="w-full flex justify-between items-start hidden">
+            <!-- Level & Score -->
+            <div class="flex flex-col gap-2">
+                <div class="bg-blue-900 bg-opacity-80 border-2 border-blue-400 px-6 py-2 rounded-2xl shadow-[0_0_15px_#3b82f6]">
+                    <span class="text-2xl font-bold text-blue-200">Soalan: </span>
+                    <span id="question-counter" class="text-3xl font-bold text-white">1/10</span>
+                </div>
+                <div class="bg-green-900 bg-opacity-80 border-2 border-green-400 px-6 py-2 rounded-2xl shadow-[0_0_15px_#4ade80]">
+                    <span class="text-2xl font-bold text-green-200">Skor: </span>
+                    <span id="score-display" class="text-3xl font-bold text-white">0</span>
+                </div>
+            </div>
+
+            <!-- Timer -->
+            <div class="bg-yellow-900 bg-opacity-80 border-2 border-yellow-400 px-8 py-4 rounded-3xl shadow-[0_0_20px_#eab308] flex flex-col items-center">
+                <span class="text-lg text-yellow-200 font-bold uppercase tracking-widest">Masa</span>
+                <span id="timer-display" class="text-5xl font-bold text-white drop-shadow-[0_0_10px_white]">15</span>
+            </div>
+
+            <!-- Lives -->
+            <div class="bg-red-900 bg-opacity-80 border-2 border-red-400 px-6 py-3 rounded-2xl shadow-[0_0_15px_#ef4444] flex items-center gap-2">
+                <span class="text-xl font-bold text-red-200 mr-2">Nyawa:</span>
+                <div id="lives-container" class="flex gap-1">
+                    <span class="heart" id="life-1">❤</span>
+                    <span class="heart" id="life-2">❤</span>
+                    <span class="heart" id="life-3">❤</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quiz Area -->
+        <div id="quiz-area" class="w-full h-full flex flex-col items-center justify-center hidden mt-10">
+            <!-- Question Box -->
+            <div class="bg-gray-900 bg-opacity-90 border-4 border-cyan-400 shadow-[0_0_30px_#22d3ee] rounded-3xl p-8 mb-12 text-center transform transition-all" id="question-box">
+                <h3 class="text-3xl text-cyan-200 mb-6 font-semibold">Berapakah hasil tambah pecahan berikut?</h3>
+                <div id="question-content" class="flex items-center justify-center text-6xl font-bold">
+                    <!-- Fraction content injected via JS -->
+                </div>
+            </div>
+
+            <!-- Answers Grid -->
+            <div class="grid grid-cols-2 gap-8 w-full max-w-4xl" id="answers-grid">
+                <div class="thunder-box interactive flex items-center justify-center py-10 cursor-pointer" id="ans-0"></div>
+                <div class="thunder-box interactive flex items-center justify-center py-10 cursor-pointer" id="ans-1"></div>
+                <div class="thunder-box interactive flex items-center justify-center py-10 cursor-pointer" id="ans-2"></div>
+                <div class="thunder-box interactive flex items-center justify-center py-10 cursor-pointer" id="ans-3"></div>
+            </div>
+        </div>
+
+        <!-- End Game Screen -->
+        <div id="end-screen" class="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 bg-opacity-95 backdrop-blur-md z-50 hidden">
+            <h1 id="end-title" class="text-7xl font-bold text-white mb-6"></h1>
+            <p id="end-message" class="text-3xl text-gray-300 mb-8 text-center px-4"></p>
+            <div class="bg-blue-900 border-4 border-blue-400 rounded-3xl p-8 mb-10 shadow-[0_0_30px_#3b82f6] text-center">
+                <p class="text-2xl text-blue-200 mb-2">Skor Akhir Anda</p>
+                <p id="final-score" class="text-7xl font-bold text-white neon-text">0 / 10</p>
+            </div>
+            <button onclick="location.reload()" class="interactive bg-green-600 hover:bg-green-500 text-white font-bold py-4 px-12 rounded-full text-2xl border-4 border-green-400 shadow-[0_0_20px_#4ade80] transition-transform transform hover:scale-110">
+                MAIN SEMULA
+            </button>
+        </div>
+
+    </div>
+
+    <script>
+        // --- 1. GAME DATA: Mathematics Year 3 (Addition of Fractions) ---
+        // Questions array. Each option is [numerator, denominator]
+        const questionsData = [
+            { q: [[1, 5], [2, 5]], options: [[2,5], [3,5], [4,5], [1,5]], correct: 1 },
+            { q: [[2, 7], [4, 7]], options: [[5,7], [6,7], [7,7], [4,7]], correct: 1 },
+            { q: [[1, 4], [1, 4]], options: [[1,4], [2,4], [3,4], [4,4]], correct: 1 },
+            { q: [[3, 8], [4, 8]], options: [[5,8], [6,8], [7,8], [8,8]], correct: 2 },
+            { q: [[2, 9], [5, 9]], options: [[6,9], [7,9], [8,9], [4,9]], correct: 1 },
+            { q: [[3, 10], [3, 10]], options: [[5,10], [6,10], [7,10], [4,10]], correct: 1 },
+            { q: [[1, 6], [3, 6]], options: [[2,6], [3,6], [4,6], [5,6]], correct: 2 },
+            { q: [[4, 9], [4, 9]], options: [[6,9], [7,9], [8,9], [9,9]], correct: 2 },
+            { q: [[2, 5], [2, 5]], options: [[3,5], [4,5], [5,5], [1,5]], correct: 1 },
+            { q: [[1, 8], [6, 8]], options: [[5,8], [6,8], [7,8], [4,8]], correct: 2 }
+        ];
+
+        // --- 2. GAME STATE ---
+        let currentQuestionIndex = 0;
+        let score = 0;
+        let lives = 3;
+        let timer = 15;
+        let timerInterval;
+        let isGameRunning = false;
+        let isProcessingAnswer = false;
+        let lockedTargetIndex = -1; // -1 means none, 0-3 for answer boxes
+        
+        // Hand tracking state
+        let cursorX = window.innerWidth / 2;
+        let cursorY = window.innerHeight / 2;
+        let handIsFist = false;
+
+        // Visual effects state
+        let lightningEffect = { active: false, startX: 0, startY: 0, endX: 0, endY: 0, time: 0 };
+        const lightningDuration = 30; // frames
+
+        // DOM Elements
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const startScreen = document.getElementById('start-screen');
+        const startBtn = document.getElementById('start-btn');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const hud = document.getElementById('hud');
+        const quizArea = document.getElementById('quiz-area');
+        const endScreen = document.getElementById('end-screen');
+        const questionContent = document.getElementById('question-content');
+        const answersElements = [
+            document.getElementById('ans-0'),
+            document.getElementById('ans-1'),
+            document.getElementById('ans-2'),
+            document.getElementById('ans-3')
+        ];
+        
+        // Resize canvas to match window
+        function resizeCanvas() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // --- 3. AUDIO SYSTEM (Synthesized via AudioContext) ---
+        let audioCtx;
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        function playSound(type) {
+            if (!audioCtx) return;
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            osc.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+
+            if (type === 'correct') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(523.25, now); // C5
+                osc.frequency.setValueAtTime(659.25, now + 0.1); // E5
+                osc.frequency.setValueAtTime(783.99, now + 0.2); // G5
+                gainNode.gain.setValueAtTime(0, now);
+                gainNode.gain.linearRampToValueAtTime(0.3, now + 0.05);
+                gainNode.gain.linearRampToValueAtTime(0, now + 0.4);
+                osc.start(now);
+                osc.stop(now + 0.4);
+            } else if (type === 'wrong') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(150, now);
+                osc.frequency.exponentialRampToValueAtTime(50, now + 0.4);
+                gainNode.gain.setValueAtTime(0, now);
+                gainNode.gain.linearRampToValueAtTime(0.3, now + 0.05);
+                gainNode.gain.linearRampToValueAtTime(0, now + 0.4);
+                osc.start(now);
+                osc.stop(now + 0.4);
+            } else if (type === 'thunder') {
+                // Noise burst
+                const bufferSize = audioCtx.sampleRate * 0.8;
+                const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = Math.random() * 2 - 1;
+                }
+                const noise = audioCtx.createBufferSource();
+                noise.buffer = buffer;
+                
+                const filter = audioCtx.createBiquadFilter();
+                filter.type = 'lowpass';
+                filter.frequency.setValueAtTime(800, now);
+                filter.frequency.exponentialRampToValueAtTime(100, now + 0.8);
+                
+                noise.connect(filter);
+                filter.connect(gainNode);
+                
+                gainNode.gain.setValueAtTime(1, now);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.8);
+                
+                noise.start(now);
+                noise.stop(now + 0.8);
+            }
+        }
+
+        // --- 4. GAME LOGIC & UI UPDATES ---
+        
+        function getFractionHTML(num, den) {
+            return `
+                <div class="fraction text-white">
+                    <span class="text-4xl lg:text-6xl drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">${num}</span>
+                    <div class="fraction-line"></div>
+                    <span class="text-4xl lg:text-6xl drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">${den}</span>
+                </div>
+            `;
+        }
+
+        function loadQuestion() {
+            if (currentQuestionIndex >= questionsData.length) {
+                endGame(true);
+                return;
+            }
+
+            const qData = questionsData[currentQuestionIndex];
+            
+            // Build Question text
+            questionContent.innerHTML = `
+                ${getFractionHTML(qData.q[0][0], qData.q[0][1])}
+                <span class="mx-6 text-yellow-300 drop-shadow-[0_0_10px_#fde047]">+</span>
+                ${getFractionHTML(qData.q[1][0], qData.q[1][1])}
+                <span class="mx-6 text-yellow-300 drop-shadow-[0_0_10px_#fde047]">=</span>
+                <span class="text-6xl text-cyan-400 animate-pulse">?</span>
+            `;
+
+            // Build Answers
+            for (let i = 0; i < 4; i++) {
+                answersElements[i].innerHTML = getFractionHTML(qData.options[i][0], qData.options[i][1]);
+                answersElements[i].className = "thunder-box interactive flex items-center justify-center py-10 cursor-pointer";
+            }
+
+            // Reset state
+            document.getElementById('question-counter').innerText = `${currentQuestionIndex + 1}/${questionsData.length}`;
+            isProcessingAnswer = false;
+            lockedTargetIndex = -1;
+            
+            // Reset and start timer
+            timer = 15;
+            updateTimerUI();
+            clearInterval(timerInterval);
+            timerInterval = setInterval(() => {
+                timer--;
+                updateTimerUI();
+                if (timer <= 0) {
+                    handleTimeOut();
+                }
+            }, 1000);
+        }
+
+        function updateTimerUI() {
+            const timerEl = document.getElementById('timer-display');
+            timerEl.innerText = timer;
+            if (timer <= 5) {
+                timerEl.classList.add('text-red-500', 'animate-ping');
+                timerEl.classList.remove('text-white');
+            } else {
+                timerEl.classList.remove('text-red-500', 'animate-ping');
+                timerEl.classList.add('text-white');
+            }
+        }
+
+        function updateLivesUI() {
+            for (let i = 1; i <= 3; i++) {
+                const heart = document.getElementById(`life-${i}`);
+                if (i <= lives) {
+                    heart.classList.remove('lost');
+                } else {
+                    heart.classList.add('lost');
+                }
+            }
+        }
+
+        function handleTimeOut() {
+            if (isProcessingAnswer) return;
+            isProcessingAnswer = true;
+            clearInterval(timerInterval);
+            playSound('wrong');
+            
+            // Highlight correct answer
+            const correctIdx = questionsData[currentQuestionIndex].correct;
+            answersElements[correctIdx].classList.add('correct');
+            
+            lives--;
+            updateLivesUI();
+            
+            setTimeout(() => {
+                if (lives <= 0) {
+                    endGame(false);
+                } else {
+                    currentQuestionIndex++;
+                    loadQuestion();
+                }
+            }, 2000);
+        }
+
+        function processAnswer(selectedIndex) {
+            if (isProcessingAnswer) return;
+            isProcessingAnswer = true;
+            clearInterval(timerInterval);
+            
+            const qData = questionsData[currentQuestionIndex];
+            const isCorrect = (selectedIndex === qData.correct);
+
+            // Fire lightning visuals
+            const targetRect = answersElements[selectedIndex].getBoundingClientRect();
+            lightningEffect.active = true;
+            lightningEffect.time = 0;
+            lightningEffect.startX = window.innerWidth / 2;
+            lightningEffect.startY = 0;
+            // Target center of the box
+            lightningEffect.endX = targetRect.left + (targetRect.width / 2);
+            lightningEffect.endY = targetRect.top + (targetRect.height / 2);
+
+            playSound('thunder');
+
+            setTimeout(() => {
+                if (isCorrect) {
+                    answersElements[selectedIndex].classList.add('correct');
+                    playSound('correct');
+                    score += 10;
+                    document.getElementById('score-display').innerText = score;
+                } else {
+                    answersElements[selectedIndex].classList.add('wrong');
+                    playSound('wrong');
+                    answersElements[qData.correct].classList.add('correct');
+                    lives--;
+                    updateLivesUI();
+                }
+
+                setTimeout(() => {
+                    if (lives <= 0) {
+                        endGame(false);
+                    } else {
+                        currentQuestionIndex++;
+                        loadQuestion();
+                    }
+                }, 2000);
+            }, 300); // Wait a bit for lightning to hit
+        }
+
+        function endGame(isWin) {
+            isGameRunning = false;
+            clearInterval(timerInterval);
+            hud.classList.add('hidden');
+            quizArea.classList.add('hidden');
+            endScreen.classList.remove('hidden');
+            
+            document.getElementById('final-score').innerText = `${score} / 100`;
+            const titleEl = document.getElementById('end-title');
+            const msgEl = document.getElementById('end-message');
+
+            if (isWin) {
+                titleEl.innerText = "TAHNIAH!";
+                titleEl.className = "text-7xl font-bold text-green-400 neon-text mb-6";
+                msgEl.innerText = "Anda telah menguasai penambahan pecahan!";
+                playSound('correct');
+            } else {
+                titleEl.innerText = "GAME OVER";
+                titleEl.className = "text-7xl font-bold text-red-500 neon-text mb-6";
+                msgEl.innerText = "Nyawa anda telah habis. Jangan putus asa, cuba lagi!";
+                playSound('wrong');
+            }
+        }
+
+        // --- 5. MEDIAPIPE & GESTURE RECOGNITION ---
+        
+        function checkFistGesture(landmarks) {
+            const wrist = landmarks[0];
+            const middleMCP = landmarks[9]; // Base of middle finger
+            
+            // Reference length: distance from wrist to middle finger base
+            const handSize = Math.hypot(wrist.x - middleMCP.x, wrist.y - middleMCP.y);
+
+            // Fingertips
+            const indexTip = landmarks[8];
+            const middleTip = landmarks[12];
+            const ringTip = landmarks[16];
+            const pinkyTip = landmarks[20];
+
+            // Distances from wrist to fingertips
+            const dIndex = Math.hypot(wrist.x - indexTip.x, wrist.y - indexTip.y);
+            const dMiddle = Math.hypot(wrist.x - middleTip.x, wrist.y - middleTip.y);
+            const dRing = Math.hypot(wrist.x - ringTip.x, wrist.y - ringTip.y);
+            const dPinky = Math.hypot(wrist.x - pinkyTip.x, wrist.y - pinkyTip.y);
+
+            // If fingertips are close to the wrist (relative to hand size), it's a fist.
+            // Adjust multiplier if detection is too strict or loose.
+            const threshold = handSize * 1.6; 
+            
+            return (dIndex < threshold && dMiddle < threshold && dRing < threshold && dPinky < threshold);
+        }
+
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // 1. Draw Camera Feed
+            if (results.image) {
+                // We draw the image but flipped horizontally via CSS
+                canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            }
+            
+            // 2. Draw Dark Overlay to make UI visible
+            canvasCtx.fillStyle = 'rgba(15, 23, 42, 0.7)';
+            canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+
+            // 3. Process Hand Landmarks
+            if (isGameRunning && results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // Map the position of the middle finger base (landmark 9) to screen coordinates.
+                // Note: The camera is mirrored horizontally in CSS, so x-coordinates are inverted here relative to the feed.
+                // Actually, if we flip canvas in CSS `transform: scaleX(-1)`, a coordinate of X=0 is on the RIGHT visually.
+                // So MediaPipe gives X=0 (left of camera). To map to screen correctly with CSS flip:
+                // screenX = landmark.x * canvasWidth.
+                cursorX = landmarks[9].x * canvasElement.width;
+                cursorY = landmarks[9].y * canvasElement.height;
+
+                // Check Gesture
+                const isCurrentlyFist = checkFistGesture(landmarks);
+                
+                // Draw Cursor
+                canvasCtx.beginPath();
+                canvasCtx.arc(cursorX, cursorY, isCurrentlyFist ? 15 : 25, 0, 2 * Math.PI);
+                canvasCtx.fillStyle = isCurrentlyFist ? '#fbbf24' : '#00ffff'; // Yellow fist, Cyan open hand
+                canvasCtx.fill();
+                canvasCtx.lineWidth = 4;
+                canvasCtx.strokeStyle = 'white';
+                canvasCtx.stroke();
+                canvasCtx.shadowBlur = 20;
+                canvasCtx.shadowColor = isCurrentlyFist ? '#fbbf24' : '#00ffff';
+                
+                // Outer ring for open hand
+                if (!isCurrentlyFist) {
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(cursorX, cursorY, 35, 0, 2 * Math.PI);
+                    canvasCtx.strokeStyle = 'rgba(0, 255, 255, 0.5)';
+                    canvasCtx.lineWidth = 2;
+                    canvasCtx.setLineDash([10, 5]);
+                    canvasCtx.stroke();
+                    canvasCtx.setLineDash([]);
+                }
+
+                // Handle Game Interactions
+                if (!isProcessingAnswer) {
+                    // Check intersection with answer boxes
+                    // Because of the CSS transform:scaleX(-1), the visual X is (canvasWidth - cursorX)
+                    const visualX = canvasElement.width - cursorX;
+                    
+                    let hoveredIndex = -1;
+                    
+                    for (let i = 0; i < 4; i++) {
+                        const rect = answersElements[i].getBoundingClientRect();
+                        if (visualX >= rect.left && visualX <= rect.right &&
+                            cursorY >= rect.top && cursorY <= rect.bottom) {
+                            hoveredIndex = i;
+                            break;
+                        }
+                    }
+
+                    // Update Lock Visuals
+                    if (hoveredIndex !== lockedTargetIndex) {
+                        if (lockedTargetIndex !== -1) {
+                            answersElements[lockedTargetIndex].classList.remove('locked');
+                        }
+                        if (hoveredIndex !== -1) {
+                            answersElements[hoveredIndex].classList.add('locked');
+                        }
+                        lockedTargetIndex = hoveredIndex;
+                    }
+
+                    // Trigger Lightning Strike if Locked + Fist
+                    if (hoveredIndex !== -1 && isCurrentlyFist && !handIsFist) {
+                        processAnswer(hoveredIndex);
+                    }
+                }
+                
+                handIsFist = isCurrentlyFist;
+            } else {
+                // No hand detected, remove lock
+                if (lockedTargetIndex !== -1) {
+                    answersElements[lockedTargetIndex].classList.remove('locked');
+                    lockedTargetIndex = -1;
+                }
+            }
+
+            // 4. Draw Lightning Effect
+            if (lightningEffect.active) {
+                drawLightning(canvasCtx, lightningEffect.startX, lightningEffect.startY, canvasElement.width - lightningEffect.endX, lightningEffect.endY); // Invert endX for mirrored canvas
+                lightningEffect.time++;
+                if (lightningEffect.time > lightningDuration) {
+                    lightningEffect.active = false;
+                }
+            }
+
+            canvasCtx.restore();
+        }
+
+        // Fractal Lightning drawing function
+        function drawLightning(ctx, startX, startY, endX, endY) {
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            let currentX = startX;
+            let currentY = startY;
+            const segments = 15;
+            
+            // Create jagged path
+            for (let i = 1; i <= segments; i++) {
+                const targetX = startX + (endX - startX) * (i / segments);
+                const targetY = startY + (endY - startY) * (i / segments);
+                
+                // Add randomness (less randomness at the ends)
+                const variance = 60 * (1 - Math.abs((i / segments) - 0.5) * 2); 
+                currentX = targetX + (Math.random() - 0.5) * variance;
+                currentY = targetY + (Math.random() - 0.5) * variance;
+                
+                if (i === segments) {
+                    currentX = endX;
+                    currentY = endY;
+                }
+                ctx.lineTo(currentX, currentY);
+            }
+            
+            // Core bolt
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = '#ffffff';
+            ctx.stroke();
+            
+            // Glow effect
+            ctx.lineWidth = 8;
+            ctx.strokeStyle = 'rgba(0, 255, 255, 0.8)';
+            ctx.shadowBlur = 30;
+            ctx.shadowColor = '#00ffff';
+            ctx.stroke();
+            
+            // Second wider glow
+            ctx.lineWidth = 15;
+            ctx.strokeStyle = 'rgba(59, 130, 246, 0.4)';
+            ctx.stroke();
+        }
+
+        // --- 6. START SEQUENCE ---
+        
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+        
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.5
+        });
+        
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+
+        startBtn.addEventListener('click', () => {
+            initAudio(); // Require user interaction to start AudioContext
+            startBtn.classList.add('hidden');
+            loadingIndicator.classList.remove('hidden');
+            
+            camera.start().then(() => {
+                // Camera ready, start game
+                startScreen.classList.add('hidden');
+                hud.classList.remove('hidden');
+                quizArea.classList.remove('hidden');
+                
+                isGameRunning = true;
+                currentQuestionIndex = 0;
+                score = 0;
+                lives = 3;
+                updateLivesUI();
+                document.getElementById('score-display').innerText = '0';
+                loadQuestion();
+            }).catch(err => {
+                alert("Sila benarkan akses kamera untuk bermain.");
+                console.error(err);
+                startBtn.classList.remove('hidden');
+                loadingIndicator.classList.add('hidden');
+            });
+        });
+
+    </script>
+</body>
+</html>
